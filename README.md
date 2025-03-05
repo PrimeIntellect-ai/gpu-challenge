@@ -5,31 +5,27 @@ This repository implements a simple **“proof-of-compute”** style benchmark t
 
 ## Features
 1. **Deterministic Matrix Generation**  
-   - Matrices \(A\) and \(B\) are each generated from a small integer seed.  
+   - Matrices $A$ and $B$ are each generated from a small integer seed.  
    - No large data transfers are needed — just the seeds.
 
 2. **Repeated Multiplication**  
    - To increase total compute time, we can perform repeated multiplications:
-     \[
-       C_1 = A \times B,\quad
-       C_2 = C_1 \times B,\quad
-       \ldots
-     \]
-   - Each iteration forces an \(\mathcal{O}(n^3)\) GPU workload.
+     $$
+     C_1 = A \times B,\quad
+     C_2 = C_1 \times B,\quad
+     \ldots
+     $$
+   - Each iteration forces an $\mathcal{O}(n^3)$ GPU workload.
 
 3. **Freivalds Verification**  
-   - Verifying a single multiplication \(C = A \times B\) takes only \(\mathcal{O}(n^2)\) operations:
-     1. Randomly pick a vector \(\mathbf{r}\) after \(C\) is submitted.  
-     2. Check \(A (B \mathbf{r}) \stackrel{?}{=} C \mathbf{r}\).  
-   - Probability of a wrong \(C\) passing is very small (\(\le 1 / 2^{32}\) in practice).
+   - Verifying a single multiplication $C = A \times B$ takes only $\mathcal{O}(n^2)$ operations:
+     1. Randomly pick a vector $\mathbf{r}$ after $C$ is submitted.  
+     2. Check $A\,(B\,\mathbf{r}) \stackrel{?}{=} C\,\mathbf{r}$.  
+   - Probability of a wrong $C$ passing is very small ($\leq 1 / 2^{32}$ in practice).
 
 ## Installation
 - Install PyTorch with CUDA support.
 - Clone or copy these Python files into a local directory.
-
-```bash
-git clone <this-repo> && cd <this-repo>
-```
 
 ## Usage
 1. Adjust `n`, `seed_A`, `seed_B`, and `iterations` in the code to control matrix size and repeated multiplications.
