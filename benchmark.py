@@ -1,4 +1,9 @@
 import torch
+import time
+
+# get device from env
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 
 def generate_matrix(n: int, seed: int, device: str = "cpu") -> torch.Tensor:
     """
@@ -31,51 +36,87 @@ def repeated_matmul(A: torch.Tensor, B: torch.Tensor, iterations: int, device: s
 
     return C_dev.to("cpu")
 
-def freivalds_check(C: torch.Tensor,
-                    seeds: list[int], device: str = "cpu", tol: float = 1e-4) -> bool:
+def freivalds_check(
+    C: torch.Tensor,
+    seeds: list[int],
+    iterations: int,
+    device: str = "cpu",
+    tol: float = 1e-4
+) -> bool:
     """
-    Freivalds’ check for verifying C ?= A x B.
-    We pick a random vector r (using 'seeds'), which we do *not* reveal
-    until after C is returned by the worker.
+    Freivalds' check for verifying that C == A * B^iterations.
+
+    :param C: The final n x n matrix claimed by the worker (on CPU or GPU).
+    :param seeds: [seed_A, seed_B], used to deterministically generate A and B.
+    :param iterations: The number of repeated multiplications. We expect C = A * (B^iterations).
+    :param device: "cpu" or "cuda".
+    :param tol: Tolerance for allclose().
+
+    Steps:
+      1) Generate A, B from seeds.
+      2) Create a random vector r after C is received (so the worker can't cheat).
+      3) Compute B^iterations * r iteratively (each iteration is O(n^2)).
+      4) Multiply A * (B^iterations r) (another O(n^2)).
+      5) Compare with C * r.
+      6) Return True if close, else False.
     """
 
+    # Prepare PyTorch RNG on chosen device
     gen = torch.Generator(device=device)
-    # pick random seed for r, using random function
-    gen.manual_seed(torch.randint(0, 1000000, (1,)).item())
+    # For the random vector r, we seed with some random integer:
+    # (You could alternatively provide your own "secret" seed here.)
+    gen.manual_seed(torch.randint(0, 1_000_000, (1,)).item())
 
-    A = generate_matrix(C.size(0), seeds[0], device=device)
-    B = generate_matrix(C.size(0), seeds[1], device=device)
+    # Generate A, B of dimension n x n
+    n = C.size(0)
+    A = generate_matrix(n, seeds[0], device=device)
+    B = generate_matrix(n, seeds[1], device=device)
 
-    # Generate a random vector of length n.
+    # Random vector r in length n
     r = torch.rand((n,), generator=gen, dtype=torch.float32, device=device)
 
+    # We'll move everything to the chosen device
     A_dev = A.to(device)
     B_dev = B.to(device)
     C_dev = C.to(device)
 
-    # B*r (O(n^2)), then A*(B*r) (O(n^2)), then C*r (O(n^2))
-    Br = torch.matmul(B_dev, r)
-    Abr = torch.matmul(A_dev, Br)
-    Cr = torch.matmul(C_dev, r)
+    # Compute B^iterations * r iteratively
+    # Start with tmp = r, then multiply by B in a loop
+    tmp = r
+    for _ in range(iterations):
+        tmp = torch.matmul(B_dev, tmp)  # O(n^2)
 
-    # Compare Abr and Cr
-    return torch.allclose(Abr, Cr, rtol=tol, atol=tol)
+    # Now tmp = B^iterations * r
+    ABiter_r = torch.matmul(A_dev, tmp)  # A * (B^iterations r) => O(n^2)
+    Cr = torch.matmul(C_dev, r)         # C * r => O(n^2)
+
+    return torch.allclose(ABiter_r, Cr, rtol=tol, atol=tol)
 
 if __name__ == "__main__":
     # Example usage:
-    n = 1600        # matrix dimension
+    n = 16000        # matrix dimension
     seed_A = 123
     seed_B = 456
-    iterations = 1   # number of repeated multiplications
+    iterations = 2  # number of repeated multiplications
 
     # Generate A, B on CPU
-    A_cpu = generate_matrix(n, seed_A, device="cpu")
-    B_cpu = generate_matrix(n, seed_B, device="cpu")
+    start_time = time.perf_counter()
+    A_cpu = generate_matrix(n, seed_A, device=DEVICE)
+    B_cpu = generate_matrix(n, seed_B, device=DEVICE)
+    gen_time = time.perf_counter() - start_time
+    print(f"Matrix gen time for A+B took {gen_time:.2f} seconds.")
 
     # Worker side: compute repeated product
-    C_cpu = repeated_matmul(A_cpu, B_cpu, iterations, device="cuda")
+    start_time = time.perf_counter()
+    C_cpu = repeated_matmul(A_cpu, B_cpu, iterations, device=DEVICE)
+    matmul_time = time.perf_counter() - start_time
+    print(f"Repeated matmul took {matmul_time:.2f} seconds.")
+
 
     # Freivalds check (the random vector seed is only revealed now)
     check_seeds = [seed_A, seed_B]
-    is_correct = freivalds_check(C_cpu, check_seeds, device="cpu")
+    start_time = time.perf_counter()
+    is_correct = freivalds_check(C_cpu, check_seeds, iterations, device=DEVICE)
+    check_time = time.perf_counter() - start_time
     print("Freivalds check passed?", is_correct)
+    print(f"Verification took {check_time:.2f} seconds.")
