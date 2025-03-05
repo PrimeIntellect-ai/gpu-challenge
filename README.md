@@ -1,7 +1,7 @@
 # GPU Benchmark
 
 ## Overview
-This repository implements a simple **“proof-of-compute”** style benchmark that forces a remote node (e.g., a GPU worker) to perform large-scale matrix multiplications, while allowing the job originator to **verify** correctness with minimal overhead. It leverages **Freivalds’ algorithm**, which provides a highly efficient way to check whether \(C\) is truly \(A \times B\) without recomputing the full product.
+This repository implements a simple **“proof-of-compute”** style benchmark that forces a remote node (e.g., a GPU worker) to perform large-scale matrix multiplications, while allowing the job originator to **verify** correctness with minimal overhead. It leverages **Freivalds’ algorithm**, which provides a highly efficient way to check whether $\(C\)$ is truly $\(A \times B\)$ without recomputing the full product.
 
 ## Features
 1. **Deterministic Matrix Generation**  
