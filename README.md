@@ -34,11 +34,11 @@ This repository implements a simple **“proof-of-compute”** style benchmark t
    - `False` indicates cheating or a serious numerical issue.
 
 ## Notes
-- **Performance**: On a high-end GPU (e.g., H100), large \(n \times n\) multiplications can take several seconds each when \(n\) is in the tens of thousands, depending on memory bandwidth and compute capacity.
-- **Floating-Point vs. Integer**: This example uses float32, but one can similarly implement integer-based matrices (mod \(2^{32}\) or mod a prime \(p\)) if desired.  
+- **Performance**: On a high-end GPU (e.g., H100), large $\(n \times n\)$ multiplications can take several seconds each when $\(n\)$ is in the tens of thousands, depending on memory bandwidth and compute capacity.
+- **Floating-Point vs. Integer**: This example uses float32, but one can similarly implement integer-based matrices (mod $\(2^{32}\)$ or mod a prime $\(p\)$) if desired.  
 - **Dockerization**: To encapsulate this benchmark, simply include these Python files and the Dockerfile that installs PyTorch + CUDA drivers. The container then only needs to receive small integer seeds at runtime to generate and multiply the large matrices.  
 - **Scaling**: If you need an even more expensive benchmark:
   - Increase `n` for greater memory impact.
   - Increase the number of repeated multiplications `iterations` for greater compute impact.
 
-This scheme ensures the worker must do full \( \mathcal{O}(n^3) \) work while the originator expends only \( \mathcal{O}(n^2) \) time on verification, making it ideal for measuring or enforcing substantial GPU compute usage.
+This scheme ensures the worker must do full $\( \mathcal{O}(n^3) \)$ work while the originator expends only $\( \mathcal{O}(n^2) \)$ time on verification, making it ideal for measuring or enforcing substantial GPU compute usage.
