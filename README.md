@@ -10,11 +10,11 @@ This repository implements a simple **“proof-of-compute”** style benchmark t
 
 2. **Repeated Multiplication**  
    - To increase total compute time, we can perform repeated multiplications:
-     $$
+$$
      C_1 = A \times B,\quad
      C_2 = C_1 \times B,\quad
      \ldots
-     $$
+$$
    - Each iteration forces an $\mathcal{O}(n^3)$ GPU workload.
 
 3. **Freivalds Verification**  
