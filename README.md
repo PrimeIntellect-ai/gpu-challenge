@@ -25,11 +25,11 @@ This protocol verifies a large matrix multiplication $C = A \times B$ performed 
 
 ## Steps in Detail
 
-1. **Verifier Generates $A, B$:**  
+1. **Verifier Picks (n, seed) Which Generate $A, B$:**  
    - Matrices $A, B \in \mathbb{R}^{n \times n}$ (or $\mathbb{F}_p$ in a finite field variant).
 
 2. **Worker Computes $C$:**  
-   - Receives $A, B$.  
+   - Receives (n, seed) and recreates $A, B$.  
    - Computes $C = A \times B$ (cost $O(n^3)$ GPU work).  
    - Builds the **Merkle tree** of row hashes $\{H(C[0,:]), \dots, H(C[n-1,:])\}$.  
    - Sends the **Merkle root** to the verifier.
