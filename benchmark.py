@@ -1,122 +1,225 @@
+import hashlib
 import torch
-import time
+import random
 
-# get device from env
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+#####################################################################
+# Merkle Tree Utilities
+#####################################################################
 
+def sha256_bytes(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
 
-def generate_matrix(n: int, seed: int, device: str = "cpu") -> torch.Tensor:
+def merkle_build_tree(leaves: list[bytes]) -> list[bytes]:
     """
-    Deterministically generate an n x n matrix using the given seed.
+    Build a Merkle tree (stored in an array) from a list of leaf hashes.
+    Return the array, where the tree root is at index 0.
+    We'll store the tree from top to bottom for convenience:
+      - tree[0] is the root
+      - next level, etc.
     """
-    gen = torch.Generator(device=device)
-    gen.manual_seed(seed)
-    # Example: uniform in [0, 1). Adjust as desired (normal, integer, etc.).
-    return torch.rand((n, n), generator=gen, dtype=torch.float32, device=device)
+    # Start at bottom level
+    level = leaves[:]  # copy
+    tree = []
+    # Build from bottom up
+    while len(level) > 1:
+        next_level = []
+        # In each pass, pair up adjacent nodes
+        for i in range(0, len(level), 2):
+            left = level[i]
+            right = level[i+1] if (i+1 < len(level)) else left
+            combined = sha256_bytes(left + right)
+            next_level.append(combined)
+        # store current level in front (we'll reconstruct path indexing carefully)
+        tree.extend(level)
+        level = next_level
+    # finally, the single element in 'level' is the root
+    tree.extend(level)
+    # The root is at the end of 'tree' as we appended up the chain
+    # but let's reverse so tree[0] is the root
+    tree.reverse()
+    return tree
 
-def repeated_matmul(A: torch.Tensor, B: torch.Tensor, iterations: int, device: str = "cuda") -> torch.Tensor:
+def merkle_num_leaves(leaves_count: int) -> int:
     """
-    Compute A x B, then multiply the result by B again, and so on,
-    for 'iterations' times in total.
-
-      1) C1 = A * B
-      2) C2 = C1 * B
-      ...
-      i) Ci = Ci-1 * B
-
-    Returns the final matrix on CPU.
+    Return the number of leaves in a full binary layer that can hold leaves_count.
+    This helps index the next layers properly.
     """
-    A_dev = A.to(device)
-    B_dev = B.to(device)
+    # In typical Merkle usage, the tree is padded up to a power of 2
+    # but here we do a simple approach that pairs the last two if needed.
+    # We'll handle that in the building function. For indexing, we do something simpler:
+    # We'll just store them linearly in build function. For path reconstruction, we need
+    # a simpler approach or store the structure carefully. 
+    # For a quick fix: we won't do an elaborate indexing trick. We'll store the entire
+    # structure as done above and do a custom path approach if needed. 
+    # This function might be left as a placeholder if we want a standard approach.
+    # But let's just define it for completeness.
+    return leaves_count
 
-    # We'll accumulate in 'C_dev'
-    C_dev = A_dev
-    for _ in range(iterations):
-        C_dev = torch.matmul(C_dev, B_dev)
-
-    return C_dev.to("cpu")
-
-def freivalds_check(
-    C: torch.Tensor,
-    seeds: list[int],
-    iterations: int,
-    device: str = "cpu",
-    tol: float = 1e-4
-) -> bool:
+def merkle_find_root(tree: list[bytes]) -> bytes:
     """
-    Freivalds' check for verifying that C == A * B^iterations.
+    In our build_tree logic, tree[0] is the root.
+    """
+    return tree[0]
 
-    :param C: The final n x n matrix claimed by the worker (on CPU or GPU).
-    :param seeds: [seed_A, seed_B], used to deterministically generate A and B.
-    :param iterations: The number of repeated multiplications. We expect C = A * (B^iterations).
-    :param device: "cpu" or "cuda".
-    :param tol: Tolerance for allclose().
+def merkle_proof_path(idx: int, leaves: list[bytes], tree: list[bytes]) -> list[bytes]:
+    """
+    Return the "authentication path" for leaf index `idx`.
+    We do a simple top-down approach, but since we stored the entire
+    Merkle structure in one array, we must carefully reconstruct the path.
+    
+    For demonstration, we skip a full correct indexing approach and show
+    a naive approach: re-build partial trees on the fly. This is simpler
+    to illustrate but not efficient for large real usage.
+    """
+    # We'll just rebuild from leaves each time, collecting sibling nodes.
+    path = []
+    level = leaves[:]
+    current_idx = idx
+    
+    offset = 0
+    # Because we appended levels in build_tree, we must replicate that:
+    # We'll iteratively build next_level, then offset by len(level) in the final storage.
 
-    Steps:
-      1) Generate A, B from seeds.
-      2) Create a random vector r after C is received (so the worker can't cheat).
-      3) Compute B^iterations * r iteratively (each iteration is O(n^2)).
-      4) Multiply A * (B^iterations r) (another O(n^2)).
-      5) Compare with C * r.
-      6) Return True if close, else False.
+    # A simpler approach is to rebuild from scratch each time, ignoring 'tree' array:
+    while len(level) > 1:
+        # Pair up and create next level
+        next_level = []
+        for i in range(0, len(level), 2):
+            left = level[i]
+            right = level[i+1] if (i+1 < len(level)) else left
+            combined = sha256_bytes(left + right)
+            next_level.append(combined)
+        # The sibling index for current_idx
+        sibling_idx = current_idx ^ 1  # flip the last bit
+        if sibling_idx < len(level):
+            path.append(level[sibling_idx])
+        # Move to the parent index
+        current_idx = current_idx // 2
+        level = next_level
+    
+    return path
+
+def merkle_verify_leaf(leaf: bytes, idx: int, path: list[bytes], root: bytes) -> bool:
+    """
+    Recompute up the chain using 'path' to see if we arrive at 'root'.
+    This is the standard Merkle path verification.
+    """
+    current = leaf
+    current_idx = idx
+    for sibling in path:
+        if (current_idx % 2) == 0:  # even index => left child
+            current = sha256_bytes(current + sibling)
+        else:  # odd index => right child
+            current = sha256_bytes(sibling + current)
+        current_idx //= 2
+    return current == root
+
+#####################################################################
+# Main Protocol Demonstration
+#####################################################################
+
+def demo_merkle_matrix_check(n=512, seed=42, device=None):
+    """
+    1) Verifier generates A, B (random n x n) but keeps them local.
+    2) Client receives A, B, computes C = A x B.
+    3) Client builds a Merkle tree of row hashes for C, returns root to verifier.
+    4) Verifier sends challenge vector r, waits for C r and random row openings.
+    5) Verifier checks C r with Freivalds, plus random row Merkle proofs.
     """
 
-    # Prepare PyTorch RNG on chosen device
-    gen = torch.Generator(device=device)
-    # For the random vector r, we seed with some random integer:
-    # (You could alternatively provide your own "secret" seed here.)
-    gen.manual_seed(torch.randint(0, 1_000_000, (1,)).item())
+    # -------------
+    # Setup
+    # -------------
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(seed)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
 
-    # Generate A, B of dimension n x n
-    n = C.size(0)
-    A = generate_matrix(n, seeds[0], device=device)
-    B = generate_matrix(n, seeds[1], device=device)
+    dtype = torch.float64
+    A = torch.randn(n, n, dtype=dtype)
+    B = torch.randn(n, n, dtype=dtype)
 
-    # Random vector r in length n
-    r = torch.rand((n,), generator=gen, dtype=torch.float32, device=device)
+    # -------------
+    # Client side
+    # -------------
+    # The client receives A, B and computes C
+    A_gpu = A.to(device)
+    B_gpu = B.to(device)
+    C_gpu = torch.matmul(A_gpu, B_gpu)
+    C = C_gpu.cpu()  # shape (n, n)
 
-    # We'll move everything to the chosen device
-    A_dev = A.to(device)
-    B_dev = B.to(device)
-    C_dev = C.to(device)
+    # Build a Merkle tree over row hashes of C
+    leaves = []
+    for row_idx in range(n):
+        row_bytes = C[row_idx, :].numpy().tobytes()
+        row_hash = sha256_bytes(row_bytes)
+        leaves.append(row_hash)
+    merkle_tree = merkle_build_tree(leaves)
+    commitment_root = merkle_find_root(merkle_tree)
 
-    # Compute B^iterations * r iteratively
-    # Start with tmp = r, then multiply by B in a loop
-    tmp = r
-    for _ in range(iterations):
-        tmp = torch.matmul(B_dev, tmp)  # O(n^2)
+    # The client sends "commitment_root" to the verifier,
+    # but withholds the actual data of C for now.
 
-    # Now tmp = B^iterations * r
-    ABiter_r = torch.matmul(A_dev, tmp)  # A * (B^iterations r) => O(n^2)
-    Cr = torch.matmul(C_dev, r)         # C * r => O(n^2)
+    # -------------
+    # Verifier side
+    # -------------
+    # The verifier picks a random challenge vector r (kept hidden until now).
+    r = torch.randn(n, dtype=dtype)
 
-    return torch.allclose(ABiter_r, Cr, rtol=tol, atol=tol)
+    # -------------
+    # Client side
+    # -------------
+    # The client must now reveal C @ r, and also let the verifier open 
+    # some random row(s) of C for deeper spot-check.
+    Cr_gpu = torch.matmul(C_gpu, r.to(device))
+    Cr = Cr_gpu.cpu()
+
+    # Suppose we open 'k' random rows to prove they match the Merkle root
+    k = 3
+    chosen_rows = random.sample(range(n), k)
+    openings = []
+    for row_idx in chosen_rows:
+        # Provide the row data
+        row_data = C[row_idx, :]
+        # Provide the Merkle path
+        path = merkle_proof_path(row_idx, leaves, merkle_tree)
+        # We'll store (row_idx, row_data, path)
+        openings.append((row_idx, row_data, path))
+
+    # -------------
+    # Verifier side
+    # -------------
+    # 1) Verifier does Freivalds check: compare A(B r) to C r
+    x = B.matmul(r)
+    check = A.matmul(x)
+    freivalds_ok = torch.allclose(check, Cr, rtol=1e-5, atol=1e-5)
+
+    # 2) Verify Merkle proofs for each opened row, and optionally check that row 
+    #    matches A*B for that row.
+    merkle_ok = True
+    row_checks_ok = True
+    for (row_idx, row_data, path) in openings:
+        leaf_hash = sha256_bytes(row_data.numpy().tobytes())
+        # Recompute the Merkle path
+        path_ok = merkle_verify_leaf(leaf_hash, row_idx, path, commitment_root)
+        if not path_ok:
+            merkle_ok = False
+        # Optionally verify that row_data is actually row_idx of A x B:
+        # row_data should be A[row_idx, :] @ B, i.e. 1 x n times n x n => 1 x n
+        # We can do a small local multiplication for that single row:
+        row_of_A = A[row_idx, :]  # shape [n]
+        # compute row_of_A * B => shape [n],  this is O(n^2) but only for 1 row => O(n)
+        local_check_row = row_of_A.matmul(B)
+        if not torch.allclose(local_check_row, row_data, rtol=1e-5, atol=1e-5):
+            row_checks_ok = False
+
+    if freivalds_ok and merkle_ok and row_checks_ok:
+        print("All checks passed. C is (almost certainly) correct.")
+    else:
+        print("Verification failed. freivalds_ok =", freivalds_ok,
+              " merkle_ok =", merkle_ok, " row_checks_ok =", row_checks_ok)
+
 
 if __name__ == "__main__":
-    # Example usage:
-    n = 16000        # matrix dimension
-    seed_A = 123
-    seed_B = 456
-    iterations = 2  # number of repeated multiplications
-
-    # Generate A, B on CPU
-    start_time = time.perf_counter()
-    A_cpu = generate_matrix(n, seed_A, device=DEVICE)
-    B_cpu = generate_matrix(n, seed_B, device=DEVICE)
-    gen_time = time.perf_counter() - start_time
-    print(f"Matrix gen time for A+B took {gen_time:.2f} seconds.")
-
-    # Worker side: compute repeated product
-    start_time = time.perf_counter()
-    C_cpu = repeated_matmul(A_cpu, B_cpu, iterations, device=DEVICE)
-    matmul_time = time.perf_counter() - start_time
-    print(f"Repeated matmul took {matmul_time:.2f} seconds.")
-
-
-    # Freivalds check (the random vector seed is only revealed now)
-    check_seeds = [seed_A, seed_B]
-    start_time = time.perf_counter()
-    is_correct = freivalds_check(C_cpu, check_seeds, iterations, device=DEVICE)
-    check_time = time.perf_counter() - start_time
-    print("Freivalds check passed?", is_correct)
-    print(f"Verification took {check_time:.2f} seconds.")
+    demo_merkle_matrix_check(n=16384, seed=42)

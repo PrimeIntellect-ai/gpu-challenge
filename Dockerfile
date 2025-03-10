@@ -10,15 +10,22 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch with CUDA (match CUDA version to the base image)
-# For official binaries, see https://pytorch.org/get-started/locally/
+# Install PyTorch with CUDA (match CUDA version to the base image).
+# The cu118 wheel is currently the latest for many PyTorch releases,
+# but confirm it aligns with your container CUDA version or use a local wheel.
 RUN pip3 install --no-cache-dir torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
+
+# Install Flask for the REST API
+RUN pip3 install --no-cache-dir flask
 
 # Create a working directory
 WORKDIR /app
 
-# Copy everything into /app (including your .py files)
+# Copy everything (including .py files) into /app
 COPY . /app
 
-# Example command to run the benchmark script
-CMD ["python3", "benchmark.py"]
+# Expose port 12121 for the Flask server
+EXPOSE 12121
+
+# Run the Prover application
+CMD ["python3", "prover.py"]
