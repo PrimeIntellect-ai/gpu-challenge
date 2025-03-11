@@ -22,7 +22,7 @@ RUN pip3 install --no-cache-dir flask
 WORKDIR /app
 
 # Copy everything (including .py files) into /app
-COPY . /app
+COPY ./prover.py /app
 
 # Expose port 12121 for the Flask server
 EXPOSE 12121
