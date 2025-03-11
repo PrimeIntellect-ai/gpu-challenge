@@ -1,7 +1,6 @@
 import requests
 import torch
 import hashlib
-import random
 import time
 import fastrand
 import math
@@ -169,6 +168,34 @@ def check_freivals(A, B, Cr, r):
     print("Freivalds check:", freivalds_ok)
     return freivalds_ok
 
+@timer
+def row_challenge(A, B, commitment_root, row_idx):
+    print(f"\nRequesting row {row_idx} from Prover...")
+    resp = requests.post(f"http://localhost:{PORT}/getRowProof", json={"row_idx": row_idx})
+    row_data = resp.json()["row_data"]
+    merkle_path = resp.json()["merkle_path"]
+    merkle_ok = True
+    row_checks_ok = True
+
+    # 1) Merkle verification
+    leaf_bytes = sha256_bytes(torch.tensor(row_data, dtype=torch.float64).numpy().tobytes())
+    path_ok = merkle_verify_leaf(leaf_bytes, row_idx, merkle_path, commitment_root)
+    if not path_ok:
+        merkle_ok = False
+        print("Merkle path verification failed for row", row_idx)
+
+    # 2) Check that row_data matches row_idx of A*B (this is O(n^2) for 1 row => O(n))
+    #    That's not too big, so we can do it occasionally as a spot check.
+    row_of_A = A[row_idx, :]  # shape [n]
+    local_check_row = row_of_A.matmul(B)  # shape [n]
+    # Compare to row_data
+    if not torch.allclose(local_check_row, torch.tensor(row_data, dtype=torch.float64), rtol=1e-5, atol=1e-5):
+        row_checks_ok = False
+        print("Row data mismatch at row", row_idx)
+    else:
+        print("Row", row_idx, "spot-check ok.")
+    return path_ok, merkle_ok, row_checks_ok
+
 def main():
     # ----------------------------
     # 1) Verifier picks random A, B, posts them to Prover
@@ -216,28 +243,9 @@ def main():
     row_checks_ok = True
     merkle_ok = True
     for row_idx in chosen_rows:
-        print(f"\nRequesting row {row_idx} from Prover...")
-        resp = requests.post(f"http://localhost:{PORT}/getRowProof", json={"row_idx": row_idx})
-        row_data = resp.json()["row_data"]
-        merkle_path = resp.json()["merkle_path"]
-
-        # 1) Merkle verification
-        leaf_bytes = sha256_bytes(torch.tensor(row_data, dtype=dtype).numpy().tobytes())
-        path_ok = merkle_verify_leaf(leaf_bytes, row_idx, merkle_path, commitment_root)
-        if not path_ok:
-            merkle_ok = False
-            print("Merkle path verification failed for row", row_idx)
-
-        # 2) Check that row_data matches row_idx of A*B (this is O(n^2) for 1 row => O(n))
-        #    That's not too big, so we can do it occasionally as a spot check.
-        row_of_A = A[row_idx, :]  # shape [n]
-        local_check_row = row_of_A.matmul(B)  # shape [n]
-        # Compare to row_data
-        if not torch.allclose(local_check_row, torch.tensor(row_data, dtype=dtype), rtol=1e-5, atol=1e-5):
-            row_checks_ok = False
-            print("Row data mismatch at row", row_idx)
-        else:
-            print("Row", row_idx, "spot-check ok.")
+        path_ok, merkle_ok, row_checks_ok = row_challenge(A, B, commitment_root, row_idx)
+        if not path_ok or not row_checks_ok:
+            break
 
     if freivalds_ok and merkle_ok and row_checks_ok:
         print("\nOverall: verification succeeded.")
