@@ -5,7 +5,10 @@ import math
 import numba
 import numpy as np
 import time
+import os
 from flask import Flask, request, jsonify
+
+PORT = int(os.getenv("PORT", 12121))
 
 app = Flask(__name__)
 
@@ -36,10 +39,9 @@ def create_rowhashes(n, master_seed):
         current_seed = sha256_bytes(current_seed)
     return row_hashes, current_seed
 
-@timer
 def create_row_from_hash(n, seed):
-    s0 = seed & 0xFFFFFFFF
-    s1 = seed >> 32 & 0xFFFFFFFF
+    s0 = seed & 0xFFFFFFFFFFFFFFF
+    s1 = int(seed >> 64) & 0xFFFFFFFFFFFFFFF
     out, _, _ = xorshift128plus_array(n, s0, s1)
     torch_64_max = float(1 << 64)
     return torch.tensor(out, dtype=torch.float64) / torch_64_max
@@ -257,6 +259,40 @@ def getRowProof():
     proof = merkle_proof_path(row_idx, leaves, merkle_tree)
 
     return jsonify({"row_data": row_data, "merkle_path": proof})
+@app.route("/getRowProofs", methods=["POST"])
+def getRowProofs():
+    """
+    Receives a list of row indexes. Returns an object with:
+    {
+      "rows": [
+        {
+          "row_idx": <int>,
+          "row_data": [float, ...],
+          "merkle_path": [str, ...]
+        },
+        ...
+      ]
+    }
+    """
+    global C, leaves, merkle_tree
+
+    data = request.json
+    row_idxs = data["row_idxs"]
+
+    rows_output = []
+    for row_idx in row_idxs:
+        # Extract row data
+        row_data = C[row_idx, :].tolist()
+        # Build Merkle proof for this row
+        path = merkle_proof_path(row_idx, leaves, merkle_tree)
+
+        rows_output.append({
+            "row_idx": row_idx,
+            "row_data": row_data,
+            "merkle_path": path
+        })
+
+    return jsonify({"rows": rows_output})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=12121, debug=False)
+    app.run(host="0.0.0.0", port=PORT, debug=False)

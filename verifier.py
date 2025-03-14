@@ -32,8 +32,8 @@ def create_rowhashes(n, master_seed):
     return row_hashes, current_seed
 
 def create_row_from_hash(n, seed):
-    s0 = seed & 0xFFFFFFFF
-    s1 = seed >> 32 & 0xFFFFFFFF
+    s0 = seed & 0xFFFFFFFFFFFFFFF
+    s1 = int(seed >> 64) & 0xFFFFFFFFFFFFFFF
     out, _, _ = xorshift128plus_array(n, s0, s1)
     torch_64_max = float(1 << 64)
     return torch.tensor(out, dtype=torch.float64) / torch_64_max
@@ -137,6 +137,7 @@ def merkle_verify_leaf(leaf: bytes, idx: int, path: list[str], root: bytes) -> b
         current_idx //= 2
     return current == root
 
+@timer
 def send_params_to_prover(n, master_seed):
     print("Sending A,B to Prover...")
     resp = requests.post(f"http://localhost:{PORT}/setAB", json={"n": n, "seed": master_seed.hex()})
