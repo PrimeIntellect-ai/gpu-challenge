@@ -3,6 +3,7 @@ import time
 import secrets
 import hashlib
 import uuid
+import json
 
 import numpy as np
 import torch
@@ -10,6 +11,13 @@ import numba
 
 import tornado.ioloop
 import tornado.web
+import tornado.escape
+
+from eth_account import Account
+from eth_account.messages import encode_defunct
+
+AUTHORIZED_ADDRESS = os.getenv("AUTHORIZED_ADDRESS", "").lower()
+# e.g. "0xAbCd1234..." the address derived from your private key
 
 VERIFIER_PORT = int(os.getenv("VERIFIER_PORT", 14141))
 
@@ -88,17 +96,66 @@ def check_freivals(A, B, Cr, r):
 # Tornado handlers
 # -------------------------------------------------------
 
-class InitHandler(tornado.web.RequestHandler):
+class BaseHandler(tornado.web.RequestHandler):
+    def prepare(self):
+        # Parse JSON once, store in self.body_dict for child handlers
+        if self.request.body:
+            try:
+                self.body_dict = tornado.escape.json_decode(self.request.body)
+            except json.JSONDecodeError:
+                self.set_status(400)
+                self.write({"error": "Invalid JSON"})
+                self.finish()
+                return
+        else:
+            self.body_dict = {}
+
+        # Extract signature from headers
+        signature_hex = self.request.headers.get("X-Signature", "")
+        if not signature_hex:
+            self.set_status(401)
+            self.write({"error": "Missing X-Signature header"})
+            self.finish()
+            return
+
+        # Rebuild the same message the coordinator used: self.request.path + sorted JSON
+        endpoint = self.request.path
+        sorted_keys = sorted(self.body_dict.keys())
+        sorted_data = {k: self.body_dict[k] for k in sorted_keys}
+        request_data_string = json.dumps(sorted_data)
+
+        message_str = f"{endpoint}{request_data_string}"
+        message = encode_defunct(text=message_str)
+
+        # Recover address from signature
+        try:
+            recovered_address = Account.recover_message(
+                message, 
+                signature=bytes.fromhex(signature_hex)
+            )
+        except:
+            self.set_status(401)
+            self.write({"error": "Signature recovery failed"})
+            self.finish()
+            return
+
+        # Check against our authorized address
+        if recovered_address.lower() != AUTHORIZED_ADDRESS:
+            self.set_status(401)
+            self.write({"error": "Unauthorized signer"})
+            self.finish()
+            return
+
+        # If all good, proceed. Child handlers can access self.body_dict.
+
+class InitHandler(BaseHandler):
     """
     1) Create a new session, generate random A,B and return session_id plus (n, master_seed).
     The coordinator will pass (n, master_seed) to the prover's /setAB.
     """
     def post(self):
-        # If 'n' is provided, use it, else default to 16384
-        n_str = self.get_argument("n", None)
-        n = int(n_str) if n_str else 16384
-        # set a limit on n so the process doesn't crash
-        # trying to allocate huge amounts of memory
+        body = self.body_dict
+        n = body.get("n", 16384)  # default 16384 if not provided
         if n > 2**20:
             n = 2**20
 
@@ -125,18 +182,16 @@ class InitHandler(tornado.web.RequestHandler):
             "master_seed": master_seed.hex()
         })
 
-class CommitmentHandler(tornado.web.RequestHandler):
+class CommitmentHandler(BaseHandler):
     """
     2) After the coordinator has told the prover to set A,B,
-       the prover returns a commitment_root. The coordinator calls
-       POST /commitment with { session_id, commitment_root }.
-
-       The verifier stores commitment_root and returns the random challenge
-       vector r that it wants the prover to use in computing C*r.
+       the coordinator calls POST /commitment with { session_id, commitment_root }.
+       The verifier stores commitment_root and returns the random challenge vector r.
     """
     def post(self):
-        session_id = self.get_argument("session_id", None)
-        commitment_root_hex = self.get_argument("commitment_root", None)
+        body = self.body_dict
+        session_id = body.get("session_id")
+        commitment_root_hex = body.get("commitment_root")
 
         if not session_id or session_id not in SESSIONS:
             self.write({"error": "Invalid or missing session_id"})
@@ -155,52 +210,38 @@ class CommitmentHandler(tornado.web.RequestHandler):
         session_data["r"] = r
 
         # Return the challenge vector as a list
-        self.write({
-            "challenge_vector": r.tolist()
-        })
+        self.write({"challenge_vector": r.tolist()})
 
-class RowChallengeHandler(tornado.web.RequestHandler):
+class RowChallengeHandler(BaseHandler):
     """
-    3) The coordinator calls /row_challenge with { session_id, Cr }
-       after the prover has computed C*r.
-
-       The verifier does the Freivalds check with the stored A,B,r,
-       compares to Cr. If it fails, we can either return an error or note
-       that it's unverified.
-
-       If it passes, the verifier picks row indices for a spot-check and returns them.
+    3) The coordinator calls /row_challenge with { session_id, Cr } after the prover computed C*r.
+       The verifier does the Freivalds check with stored A,B,r. If passes, picks row(s) for spot-check.
     """
     def post(self):
-        session_id = self.get_argument("session_id", None)
+        body = self.body_dict
+        session_id = body.get("session_id")
         if not session_id or session_id not in SESSIONS:
             self.write({"error": "Invalid or missing session_id"})
             return
+        
+        Cr_string_list = self.body_dict.get("Cr", [])
+        Cr_list = [float(s) for s in Cr_string_list]
+
+        #Cr_list = body.get("Cr")
+        # if Cr_list is None:
+        #    self.write({"error": "Missing Cr"})
+        #    return
 
         session_data = SESSIONS[session_id]
-        A   = session_data["A"]
-        B   = session_data["B"]
-        r   = session_data["r"]
-
+        A, B, r = session_data["A"], session_data["B"], session_data["r"]
         if (A is None) or (B is None) or (r is None):
             self.write({"error": "Session missing A,B,r"})
             return
 
-        # Get Cr from request
-        Cr_arg = self.get_argument("Cr", None)
-        if not Cr_arg:
-            self.write({"error": "Missing Cr"})
-            return
+        Cr_tensor = torch.tensor(Cr_list, dtype=torch.float64)
 
-        # Parse Cr into a float tensor
-        # The coordinator might send it as JSON array; we handle comma-separated or similar
-        # For simplicity assume it's a comma-separated string of floats
-        # or you can adapt to whatever format is easier
-        Cr_str_list = Cr_arg.split(",")
-        Cr_floats = list(map(float, Cr_str_list))
-        Cr = torch.tensor(Cr_floats, dtype=torch.float64)
-
-        # Perform the Freivalds check
-        freivalds_ok = check_freivals(A, B, Cr, r)
+        # Perform Freivalds
+        freivalds_ok = check_freivals(A, B, Cr_tensor, r)
         if not freivalds_ok:
             self.write({"freivalds_ok": False, "spot_rows": []})
             return
@@ -212,110 +253,84 @@ class RowChallengeHandler(tornado.web.RequestHandler):
         while len(set(chosen_rows)) < k:
             chosen_rows = [secrets.randbelow(n) for _ in range(k)]
 
-        # Store them so we know which ones we asked for
         session_data["spot_rows"] = chosen_rows
-
         self.write({
             "freivalds_ok": True,
             "spot_rows": chosen_rows
         })
 
-class RowCheckHandler(tornado.web.RequestHandler):
+class RowCheckHandler(BaseHandler):
     """
-    4) The coordinator calls /row_check with { session_id, row_idx, row_data, merkle_path }.
-       The verifier verifies the Merkle path, then checks row_data vs. A[row_idx]*B.
-
-       Return True if passes, False otherwise.
+    4) Coordinator calls /row_check with JSON:
+       {
+         "session_id": "...",
+         "row_idx": 123,
+         "row_data": [...],
+         "merkle_path": [...]
+       }
+       Verifier checks merkle path & row correctness vs. A[row_idx]*B.
+       Returns { "result": bool }.
     """
     def post(self):
-        session_id = self.get_argument("session_id", None)
-        row_idx_str = self.get_argument("row_idx", None)
-
-        # row_data could be large, so we assume the coordinator passes it as a comma-separated string
-        # or a JSON array. We'll parse accordingly.
-        row_data_str = self.get_argument("row_data", None)
-        merkle_path_str = self.get_argument("merkle_path", None)
+        body = self.body_dict
+        session_id = body.get("session_id")
+        row_idx = body.get("row_idx")
+        row_data = body.get("row_data")
+        merkle_path = body.get("merkle_path")
 
         if not session_id or session_id not in SESSIONS:
             self.write({"result": False, "error": "Invalid or missing session_id"})
             return
-        if not row_idx_str:
-            self.write({"result": False, "error": "Missing row_idx"})
-            return
-        if not row_data_str:
-            self.write({"result": False, "error": "Missing row_data"})
-            return
-        if not merkle_path_str:
-            self.write({"result": False, "error": "Missing merkle_path"})
+        if row_idx is None or row_data is None or merkle_path is None:
+            self.write({"result": False, "error": "Missing row check data"})
             return
 
         session_data = SESSIONS[session_id]
-        row_idx = int(row_idx_str)
-
-        # Convert row_data to a list of floats
-        row_data_floats = list(map(float, row_data_str.split(",")))
-        row_data_tensor = torch.tensor(row_data_floats, dtype=torch.float64)
-
-        # Convert merkle_path to a list of hex
-        # e.g. if user posted them joined by commas
-        path_hex_list = merkle_path_str.split(",")
-
-        # 1) Merkle verification
-        leaf_bytes = sha256_bytes(row_data_tensor.numpy().tobytes())
-        root = session_data["commitment_root"]
+        A, B, root = session_data["A"], session_data["B"], session_data["commitment_root"]
         if root is None:
             self.write({"result": False, "error": "No commitment_root in session"})
             return
 
-        path_ok = merkle_verify_leaf(leaf_bytes, row_idx, path_hex_list, root)
+        # Convert row_data to a tensor
+        row_data_tensor = torch.tensor(row_data, dtype=torch.float64)
+
+        # 1) Merkle verify
+        leaf_bytes = sha256_bytes(row_data_tensor.numpy().tobytes())
+        path_ok = merkle_verify_leaf(leaf_bytes, row_idx, merkle_path, root)
         if not path_ok:
             self.write({"result": False})
             return
 
-        # 2) Row correctness check
-        A = session_data["A"]
-        B = session_data["B"]
+        # 2) Check correctness
         row_of_A = A[row_idx, :]
         local_check_row = row_of_A.matmul(B)
         row_checks_ok = torch.allclose(local_check_row, row_data_tensor, rtol=1e-5, atol=1e-5)
 
         self.write({"result": bool(path_ok and row_checks_ok)})
 
-
-class MultiRowCheckHandler(tornado.web.RequestHandler):
+class MultiRowCheckHandler(BaseHandler):
     """
-    The coordinator calls /multi_row_check with JSON like:
-    {
-      "session_id": "...",
-      "rows": [
-        {
-          "row_idx": 5,
-          "row_data": [0.1, 0.2, 0.3, ...],
-          "merkle_path": ["abcd...", "ef12..."]
-        },
-        {
-          "row_idx": 11,
-          "row_data": [0.5, 0.6, ...],
-          "merkle_path": ["bcde...", "fa93..."]
-        },
-        ...
-      ]
-    }
-
-    We return, for example:
-    {
-      "all_passed": true,
-      "results": [
-        { "row_idx": 5,  "pass": true  },
-        { "row_idx": 11, "pass": false }
-      ]
-    }
+    5) Coordinator calls /multi_row_check with JSON:
+       {
+         "session_id": "...",
+         "rows": [
+           {
+             "row_idx": 5,
+             "row_data": [...],
+             "merkle_path": [...]
+           },
+           ...
+         ]
+       }
+       Checks each row. Returns {
+         "all_passed": bool,
+         "results": [ {"row_idx": ..., "pass": bool}, ... ]
+       }
     """
-
     def post(self):
-        data = tornado.escape.json_decode(self.request.body)
-        session_id = data.get("session_id", None)
-        rows_info = data.get("rows", [])
+        body = self.body_dict
+        session_id = body.get("session_id")
+        rows_info = body.get("rows", [])
 
         if not session_id or session_id not in SESSIONS:
             self.write({
@@ -326,10 +341,7 @@ class MultiRowCheckHandler(tornado.web.RequestHandler):
             return
 
         session_data = SESSIONS[session_id]
-        A = session_data["A"]
-        B = session_data["B"]
-        root = session_data["commitment_root"]
-
+        A, B, root = session_data["A"], session_data["B"], session_data["commitment_root"]
         if A is None or B is None or root is None:
             self.write({
                 "all_passed": False,
@@ -346,16 +358,16 @@ class MultiRowCheckHandler(tornado.web.RequestHandler):
             row_data = row_obj.get("row_data")
             merkle_path = row_obj.get("merkle_path")
 
-            # Basic sanity checks
+            # Basic checks
             if row_idx is None or row_data is None or merkle_path is None:
                 results.append({"row_idx": row_idx, "pass": False})
                 all_passed = False
                 continue
 
-            # Convert row_data to torch tensor
+            # Convert to tensor
             row_data_tensor = torch.tensor(row_data, dtype=torch.float64)
 
-            # 1) Merkle verification
+            # 1) Merkle verify
             leaf_bytes = sha256_bytes(row_data_tensor.numpy().tobytes())
             path_ok = merkle_verify_leaf(leaf_bytes, row_idx, merkle_path, root)
             if not path_ok:
@@ -363,7 +375,7 @@ class MultiRowCheckHandler(tornado.web.RequestHandler):
                 all_passed = False
                 continue
 
-            # 2) Row correctness check
+            # 2) Row correctness
             row_of_A = A[row_idx, :]
             local_check_row = row_of_A.matmul(B)
             row_checks_ok = torch.allclose(local_check_row, row_data_tensor, rtol=1e-5, atol=1e-5)
@@ -382,15 +394,15 @@ class MultiRowCheckHandler(tornado.web.RequestHandler):
 
 def make_app():
     return tornado.web.Application([
-        (r"/init",         InitHandler),
-        (r"/commitment",   CommitmentHandler),
-        (r"/row_challenge", RowChallengeHandler),
-        (r"/row_check",    RowCheckHandler),
-        (r"/multi_row_check",    MultiRowCheckHandler),
+        (r"/init",            InitHandler),
+        (r"/commitment",      CommitmentHandler),
+        (r"/row_challenge",   RowChallengeHandler),
+        (r"/row_check",       RowCheckHandler),
+        (r"/multi_row_check", MultiRowCheckHandler),
     ])
 
 if __name__ == "__main__":
     app = make_app()
     app.listen(VERIFIER_PORT)
-    print(f"Verifier API running on port {VERIFIER_PORT}")
+    print(f"Verifier API running on port {VERIFIER_PORT}, using JSON-based requests.")
     tornado.ioloop.IOLoop.current().start()

@@ -1,11 +1,77 @@
 import requests
+import os
+import json
+from eth_account import Account
+from eth_account.messages import encode_defunct
 
 VERIFIER_URL = "http://localhost:14141"
 PROVER_URL   = "http://localhost:12121"
 
+PRIVATE_KEY_HEX = os.getenv("PRIVATE_KEY_HEX")
+
+def sign_request(endpoint: str, data: dict | None, private_key_hex: str) -> str:
+    """
+    Matches the Rust logic:
+      1) Sort JSON keys
+      2) Convert to string
+      3) message = endpoint + request_data_string
+      4) EIP-191 sign (personal sign)
+    Returns signature hex.
+    """
+    if data:
+        # Sort the dict by keys
+        sorted_keys = sorted(data.keys())
+        sorted_data = {k: data[k] for k in sorted_keys}
+        request_data_string = json.dumps(sorted_data)
+    else:
+        request_data_string = ""
+
+    message_str = f"{endpoint}{request_data_string}"
+    message = encode_defunct(text=message_str)
+    signed = Account.sign_message(message, private_key=private_key_hex)
+    return signed.signature.hex()
+
+def post_signed_json(endpoint: str, data: dict | None = None) -> requests.Response:
+    """
+    1) Sort the data’s keys (like your Rust code does).
+    2) Convert the sorted data to JSON.
+    3) Create message_str = endpoint + sorted_json.
+    4) EIP-191 sign that string (personal_sign).
+    5) Send the result to the verifier with:
+       - 'Content-Type: application/json'
+       - 'X-Signature: <hex signature>'
+       - 'X-Endpoint: <endpoint>'
+    6) Return the requests.Response for further processing.
+    """
+    # 1) Sort the data
+    data = data or {}
+    sorted_keys = sorted(data.keys())
+    sorted_dict = {k: data[k] for k in sorted_keys}
+
+    # 2) Convert to JSON bytes
+    sorted_json = json.dumps(sorted_dict)
+
+    # 3) Concat endpoint + sorted_json
+    message_str = f"{endpoint}{sorted_json}"
+
+    # 4) EIP-191 sign
+    message = encode_defunct(text=message_str)
+    signed = Account.sign_message(message, private_key=PRIVATE_KEY_HEX)
+    signature_hex = signed.signature.hex()
+
+    # 5) POST to the verifier with the signature in headers
+    url = VERIFIER_URL + endpoint
+    headers = {
+        "Content-Type": "application/json",
+        "X-Signature": signature_hex,
+    }
+
+    return requests.post(url, json=sorted_dict, headers=headers)
+
 def run_protocol():
     # 1) Ask the verifier to init a new session: returns {session_id, n, master_seed}
-    init_resp = requests.post(f"{VERIFIER_URL}/init")
+    # init_resp = requests.post(f"{VERIFIER_URL}/init")
+    init_resp = post_signed_json("/init")
     init_data = init_resp.json()
     session_id = init_data["session_id"]
     n = init_data["n"]
@@ -27,8 +93,8 @@ def run_protocol():
     commitment_root_hex = getCommitment_data["commitment_root"]
 
     # 3) Pass the prover's commitment_root to the verifier -> get a challenge vector r
-    commitment_resp = requests.post(
-        f"{VERIFIER_URL}/commitment",
+    commitment_resp = post_signed_json(
+        "/commitment",
         data={
             "session_id": session_id,
             "commitment_root": commitment_root_hex
@@ -47,12 +113,12 @@ def run_protocol():
 
     # 5) Ask the verifier which rows it wants to check, passing Cr for the Freivalds test
     #    Assume we encode Cr as a comma-separated string for the verifier’s rowchallenge endpoint
-    Cr_str = ",".join(str(x) for x in Cr)
-    rowchallenge_resp = requests.post(
-        f"{VERIFIER_URL}/row_challenge",
+    # Cr_str = ",".join(str(x) for x in Cr)
+    rowchallenge_resp = post_signed_json(
+        "/row_challenge",
         data={
             "session_id": session_id,
-            "Cr": Cr_str
+            "Cr": Cr
         }
     )
     rowchallenge_data = rowchallenge_resp.json()
@@ -60,9 +126,6 @@ def run_protocol():
     if not freivalds_ok:
         print("Freivalds check failed. Exiting.")
         return
-
-    spot_rows = rowchallenge_data["spot_rows"]
-    print("Freivalds check passed. Spot-checking rows:", spot_rows)
 
     # After receiving the spot_rows from /rowchallenge
     spot_rows = rowchallenge_data["spot_rows"]
@@ -89,10 +152,7 @@ def run_protocol():
         "session_id": session_id,
         "rows": rowproofs_data["rows"]
     }
-    rowcheck_resp = requests.post(
-        f"{VERIFIER_URL}/multi_row_check",
-        json=payload
-    )
+    rowcheck_resp = post_signed_json("/multi_row_check", data=payload)
     rowcheck_result = rowcheck_resp.json()
     # Example response:
     # {
