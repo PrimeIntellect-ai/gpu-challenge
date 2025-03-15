@@ -17,6 +17,9 @@ RUN pip3 install --no-cache-dir torch torchvision torchaudio --extra-index-url h
 
 # Install Flask for the REST API
 RUN pip3 install --no-cache-dir flask
+RUN pip3 install --no-cache-dir joblib
+RUN pip3 install --no-cache-dir numba
+RUN pip3 install --no-cache-dir numpy
 
 # Create a working directory
 WORKDIR /app
