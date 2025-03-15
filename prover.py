@@ -7,6 +7,7 @@ import numpy as np
 import time
 import os
 from flask import Flask, request, jsonify
+from joblib import Parallel, delayed
 
 PORT = int(os.getenv("PORT", 12121))
 
@@ -31,6 +32,45 @@ def timer(func):
         return result
     return wrapper
 
+@timer
+def build_merkle_root(C_t):
+    # Convert the entire tensor once
+    arr = C_t.cpu().numpy()
+
+    # Hash rows in parallel
+    leaves = Parallel(n_jobs=-1)(
+        delayed(sha256_bytes)(arr[i].tobytes()) for i in range(arr.shape[0])
+    )
+
+    tree = merkle_build_tree_opt(leaves)
+    return merkle_find_root(tree), tree, leaves
+
+@timer
+def merkle_build_tree_opt(leaves: list[bytes]) -> list[bytes]:
+    # We store all levels into `tree` so you can later index them for proofs.
+    # If you only need the root, you can stop once you have one-element `level`.
+    level = leaves[:]
+    tree = []
+    while len(level) > 1:
+        # Pair up level elements and replicate last if len is odd
+        pairs = [(level[i], level[i+1] if i+1 < len(level) else level[i])
+                 for i in range(0, len(level), 2)]
+
+        # Hash pairs in parallel
+        next_level = Parallel(n_jobs=-1)(
+            delayed(sha256_bytes)(left + right) for (left, right) in pairs
+        )
+        # Add this entire level to the big list, then climb up one level
+        tree.extend(level)
+        level = next_level
+
+    # Add the final level (the single root)
+    tree.extend(level)
+    # Reverse so that the root is at index 0 if you want
+    tree.reverse()
+    return tree
+
+
 def create_rowhashes(n, master_seed):
     row_hashes = []
     current_seed = master_seed
@@ -44,7 +84,8 @@ def create_row_from_hash(n, seed):
     s1 = int(seed >> 64) & 0xFFFFFFFFFFFFFFF
     out, _, _ = xorshift128plus_array(n, s0, s1)
     torch_64_max = float(1 << 64)
-    return torch.tensor(out, dtype=torch.float64) / torch_64_max
+    # return torch.tensor(out, dtype=torch.float64) / torch_64_max
+    return torch.from_numpy(out)
 
 @timer
 def create_deterministic_rowhash_matrix(n, master_seed):
@@ -55,10 +96,13 @@ def create_deterministic_rowhash_matrix(n, master_seed):
         rows.append(row_data)
     return torch.stack(rows), next_hash
 
+MASK_64 = 0xFFFFFFFFFFFFFFFF
+INV_2_64 = float(2**64)
+
 @numba.njit
 def xorshift128plus_array(n, s0, s1):
     # Generate n samples. s0, s1 are 64-bit seeds.
-    out = np.empty(n, dtype=np.uint64)
+    out = np.empty(n, dtype=np.float64)
     for i in range(n):
         # Xorshift128+ example
         x = s0
@@ -66,7 +110,8 @@ def xorshift128plus_array(n, s0, s1):
         s0 = y
         x ^= x << 23
         s1 = x ^ y ^ (x >> 17) ^ (y >> 26)
-        out[i] = (s1 + y) & ((1 << 64) - 1)
+        val = (s1 + y) & MASK_64
+        out[i] = val / INV_2_64
     return out, s0, s1
 
 def pcg_uniform_torch64(count, seed0, seed1):
@@ -156,6 +201,11 @@ def merkle_build_tree(leaves: list[bytes]) -> list[bytes]:
 def merkle_find_root(tree: list[bytes]) -> bytes:
     return tree[0] if tree else b''
 
+@timer
+def compute_C(A, B):
+    C_t = torch.matmul(A, B)
+    return C_t
+
 #################################################################
 # Flask Endpoints
 #################################################################
@@ -178,20 +228,12 @@ def setAB():
 
 
     # Compute C
-    C_t = torch.matmul(A, B)
-    C = C_t.cpu()  # Store on CPU for hashing
+    C_t = compute_C(A, B)
+    C = C_t
+    # C = C_t.cpu()  # Store on CPU for hashing
 
     # Build Merkle over row-hashes
-    leaves_temp = []
-    for i in range(C.shape[0]):
-        row_bytes = C[i,:].numpy().tobytes()
-        leaves_temp.append(sha256_bytes(row_bytes))
-    tree = merkle_build_tree(leaves_temp)
-    root = merkle_find_root(tree)
-
-    leaves = leaves_temp
-    merkle_tree = tree
-    commitment_root = root
+    commitment_root, merkle_tree, leaves = build_merkle_root(C_t)
 
     return jsonify({"status": "ok"})
 

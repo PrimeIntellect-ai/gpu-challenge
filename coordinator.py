@@ -1,13 +1,24 @@
 import requests
 import os
 import json
+import time
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
-VERIFIER_URL = "http://localhost:14141"
-PROVER_URL   = "http://localhost:12121"
+VERIFIER_URL = os.getenv("VERIFIER_URL", "http://localhost:14141")
+PROVER_URL   = os.getenv("PROVER_URL", "http://localhost:12121")
 
 PRIVATE_KEY_HEX = os.getenv("PRIVATE_KEY_HEX")
+
+# create timer decorator that prints the first string argument of the inner function as a string
+def timer(func):
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        end = time.time()
+        print(f"{func.__name__}{args[0]} took {end - start} seconds")
+        return result
+    return wrapper
 
 def sign_request(endpoint: str, data: dict | None, private_key_hex: str) -> str:
     """
@@ -31,6 +42,7 @@ def sign_request(endpoint: str, data: dict | None, private_key_hex: str) -> str:
     signed = Account.sign_message(message, private_key=private_key_hex)
     return signed.signature.hex()
 
+@timer
 def post_signed_json(endpoint: str, data: dict | None = None) -> requests.Response:
     """
     1) Sort the data’s keys (like your Rust code does).
@@ -68,6 +80,14 @@ def post_signed_json(endpoint: str, data: dict | None = None) -> requests.Respon
 
     return requests.post(url, json=sorted_dict, headers=headers)
 
+@timer
+def post_to_prover(endpoint: str, json: dict | None = None) -> requests.Response:
+    return requests.post(f"{PROVER_URL}{endpoint}", json=json).json()
+
+@timer
+def get_from_prover(endpoint: str) -> requests.Response:
+    return requests.get(f"{PROVER_URL}{endpoint}").json()
+
 def run_protocol():
     # 1) Ask the verifier to init a new session: returns {session_id, n, master_seed}
     # init_resp = requests.post(f"{VERIFIER_URL}/init")
@@ -79,36 +99,33 @@ def run_protocol():
     print("Session ID:", session_id, "   n =", n)
 
     # 2) Tell the prover to set A,B using n and master_seed
-    setAB_resp = requests.post(
-        f"{PROVER_URL}/setAB",
+    setAB_data = post_to_prover(
+        "/setAB",
         json={"n": n, "seed": master_seed_hex}
     )
-    setAB_data = setAB_resp.json()
     # check success
     if "status" not in setAB_data or setAB_data["status"] != "ok":
         print("Error setting A,B. Exiting.")
         return
-    getCommitment_resp = requests.get(f"{PROVER_URL}/getCommitment")
-    getCommitment_data = getCommitment_resp.json()
+    getCommitment_data = get_from_prover("/getCommitment")
     commitment_root_hex = getCommitment_data["commitment_root"]
 
     # 3) Pass the prover's commitment_root to the verifier -> get a challenge vector r
-    commitment_resp = post_signed_json(
+    challenge_resp = post_signed_json(
         "/commitment",
         data={
             "session_id": session_id,
             "commitment_root": commitment_root_hex
         }
     )
-    challenge_data = commitment_resp.json()
+    challenge_data = challenge_resp.json()
     challenge_vector = challenge_data["challenge_vector"]
 
     # 4) Send challenge vector to the prover to compute C*r
-    computeCR_resp = requests.post(
-        f"{PROVER_URL}/computeCR",
+    computeCR_data = post_to_prover(
+        "/computeCR",
         json={"r": challenge_vector}
     )
-    computeCR_data = computeCR_resp.json()
     Cr = computeCR_data["Cr"]
 
     # 5) Ask the verifier which rows it wants to check, passing Cr for the Freivalds test
@@ -133,11 +150,10 @@ def run_protocol():
 
     # 6) Ask the prover for proofs of each row in one call: /getRowProofs
     #    Instead of calling /getRowProof for each row_idx, we can pass an array of row_idxs.
-    rowproofs_resp = requests.post(
-        f"{PROVER_URL}/getRowProofs",
+    rowproofs_data = post_to_prover(
+        "/getRowProofs",
         json={"row_idxs": spot_rows}
     )
-    rowproofs_data = rowproofs_resp.json()
 
     # Suppose the prover's response is of the form:
     # { "rows": [

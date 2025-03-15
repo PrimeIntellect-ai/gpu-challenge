@@ -24,6 +24,9 @@ VERIFIER_PORT = int(os.getenv("VERIFIER_PORT", 14141))
 # In-memory sessions keyed by session_id
 SESSIONS = {}
 
+MASK_64 = 0xFFFFFFFFFFFFFFFF
+INV_2_64 = float(2**64)
+
 def timer(func):
     def wrapper(*args, **kwargs):
         start = time.time()
@@ -35,14 +38,15 @@ def timer(func):
 
 @numba.njit
 def xorshift128plus_array(n, s0, s1):
-    out = np.empty(n, dtype=np.uint64)
+    out = np.empty(n, dtype=np.float64)
     for i in range(n):
         x = s0
         y = s1
         s0 = y
         x ^= x << 23
         s1 = x ^ y ^ (x >> 17) ^ (y >> 26)
-        out[i] = (s1 + y) & ((1 << 64) - 1)
+        val = (s1 + y) & MASK_64
+        out[i] = val / INV_2_64
     return out, s0, s1
 
 def sha256_bytes(data: bytes) -> bytes:
@@ -72,7 +76,8 @@ def create_row_from_hash(n, seed_int):
     s0 = seed_int & 0xFFFFFFFFFFFFFFF
     s1 = (seed_int >> 64) & 0xFFFFFFFFFFFFFFF
     out, _, _ = xorshift128plus_array(n, s0, s1)
-    return torch.tensor(out, dtype=torch.float64) / float(1 << 64)
+    # return torch.tensor(out, dtype=torch.float64) / float(1 << 64)
+    return torch.from_numpy(out)
 
 @timer
 def create_deterministic_rowhash_matrix(n, master_seed):
