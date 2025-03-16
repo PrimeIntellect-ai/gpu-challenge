@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install --no-cache-dir torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
 
 # Install Flask for the REST API
-RUN pip3 install --no-cache-dir flask
+RUN pip3 install --no-cache-dir tornado
 RUN pip3 install --no-cache-dir joblib
 RUN pip3 install --no-cache-dir numba
 RUN pip3 install --no-cache-dir numpy

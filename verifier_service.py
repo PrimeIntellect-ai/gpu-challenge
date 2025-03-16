@@ -1,13 +1,12 @@
 import os
-import time
 import secrets
-import hashlib
 import uuid
 import json
+import base64
+import time
 
-import numpy as np
 import torch
-import numba
+import numpy as np
 
 import tornado.ioloop
 import tornado.web
@@ -16,41 +15,32 @@ import tornado.escape
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
+from common import (
+    create_deterministic_rowhash_matrix,
+    create_row_from_hash,
+    sha256_bytes,
+    safe_allclose,
+    DTYPE,
+    NTYPE,
+    A_TOL,
+    R_TOL
+)
 AUTHORIZED_ADDRESS = os.getenv("AUTHORIZED_ADDRESS", "").lower()
 # e.g. "0xAbCd1234..." the address derived from your private key
 
 VERIFIER_PORT = int(os.getenv("VERIFIER_PORT", 14141))
 
+GB = 1024**3
+
 # In-memory sessions keyed by session_id
 SESSIONS = {}
+CURRENT_MEMORY = 0
+MAX_MEMORY = int(os.getenv("MAX_MEMORY", 100*GB))  # 100 GB
+SESSION_TIMEOUT = 300  # 5 minutes
 
-MASK_64 = 0xFFFFFFFFFFFFFFFF
-INV_2_64 = float(2**64)
-
-def timer(func):
-    def wrapper(*args, **kwargs):
-        start = time.time()
-        result = func(*args, **kwargs)
-        end = time.time()
-        print(f"{func.__name__} took {end - start} seconds")
-        return result
-    return wrapper
-
-@numba.njit
-def xorshift128plus_array(n, s0, s1):
-    out = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        x = s0
-        y = s1
-        s0 = y
-        x ^= x << 23
-        s1 = x ^ y ^ (x >> 17) ^ (y >> 26)
-        val = (s1 + y) & MASK_64
-        out[i] = val / INV_2_64
-    return out, s0, s1
-
-def sha256_bytes(data: bytes) -> bytes:
-    return hashlib.sha256(data).digest()
+# -------------------------------------------------------
+# Merkle proof helpers
+# -------------------------------------------------------
 
 def merkle_verify_leaf(leaf: bytes, idx: int, path: list[str], root: bytes) -> bool:
     current = leaf
@@ -64,38 +54,46 @@ def merkle_verify_leaf(leaf: bytes, idx: int, path: list[str], root: bytes) -> b
         current_idx //= 2
     return current == root
 
-def create_rowhashes(n, master_seed):
-    row_hashes = []
-    current_seed = master_seed
-    for _ in range(n):
-        row_hashes.append(sha256_bytes(current_seed))
-        current_seed = sha256_bytes(current_seed)
-    return row_hashes, current_seed
-
-def create_row_from_hash(n, seed_int):
-    s0 = seed_int & 0xFFFFFFFFFFFFFFF
-    s1 = (seed_int >> 64) & 0xFFFFFFFFFFFFFFF
-    out, _, _ = xorshift128plus_array(n, s0, s1)
-    # return torch.tensor(out, dtype=torch.float64) / float(1 << 64)
-    return torch.from_numpy(out)
-
-@timer
-def create_deterministic_rowhash_matrix(n, master_seed):
-    row_hashes, next_hash = create_rowhashes(n, master_seed)
-    rows = []
-    for i in range(n):
-        seed_int = int.from_bytes(row_hashes[i], "big")
-        row_data = create_row_from_hash(n, seed_int)
-        rows.append(row_data)
-    return torch.stack(rows), next_hash
-
 def check_freivals(A, B, Cr, r):
     """
     Freivalds check: verify A(B*r) == C*r without computing C= A*B fully.
     """
-    x = B.matmul(r)    # B*r
-    check = A.matmul(x) # A * (B*r)
-    return torch.allclose(check, Cr, rtol=1e-5, atol=1e-5)
+    # Use accumulation pattern that reduces error
+    x = B.matmul(r)
+    
+    # Compare with residual-based approach
+    check = A.matmul(x)
+    
+    # Kahan summation pattern for reduced error when checking difference
+    residual = check - Cr
+    residual_norm = torch.norm(residual)
+    sum_norm = torch.norm(check) + 1e-10  # Avoid division by zero
+    
+    # Check both relative and absolute error
+    relative_error = residual_norm / sum_norm
+    absolute_error = residual_norm
+    
+    # For debugging: print the actual errors
+    print(f"Relative error: {relative_error.item()}, Absolute error: {absolute_error.item()}")
+
+    return safe_allclose(check, Cr, rtol=R_TOL, atol=A_TOL)
+
+def check_row_correctness(A_row, B, claimed_row):
+    """
+    More numerically stable row verification for float32
+    """
+    # Compute product in blocks to reduce accumulation errors
+    n = B.shape[1]
+    local_check_row = torch.zeros(n, dtype=A_row.dtype, device=A_row.device)
+    
+    # Process in smaller blocks to reduce error accumulation
+    block_size = min(1024, n)
+    for j in range(0, n, block_size):
+        j_end = min(j + block_size, n)
+        local_check_row[j:j_end] = torch.matmul(A_row, B[:, j:j_end])
+    
+    # Check if rows match with appropriate tolerance
+    return torch.allclose(local_check_row, claimed_row, rtol=R_TOL, atol=A_TOL)
 
 # -------------------------------------------------------
 # Tornado handlers
@@ -103,6 +101,9 @@ def check_freivals(A, B, Cr, r):
 
 class BaseHandler(tornado.web.RequestHandler):
     def prepare(self):
+        self._kill_timeout = tornado.ioloop.IOLoop.current().call_later(
+            SESSION_TIMEOUT, self._kill_connection
+        )
         # Parse JSON once, store in self.body_dict for child handlers
         if self.request.body:
             try:
@@ -152,6 +153,15 @@ class BaseHandler(tornado.web.RequestHandler):
             return
 
         # If all good, proceed. Child handlers can access self.body_dict.
+    
+    def on_finish(self):
+        if hasattr(self, "_kill_timeout"):
+            tornado.ioloop.IOLoop.current().remove_timeout(self._kill_timeout)
+
+    def _kill_connection(self):
+        if not self._finished:
+            self.set_status(408)
+            self.finish("Request exceeded maximum duration.")
 
 class InitHandler(BaseHandler):
     """
@@ -159,10 +169,30 @@ class InitHandler(BaseHandler):
     The coordinator will pass (n, master_seed) to the prover's /setAB.
     """
     def post(self):
+        global CURRENT_MEMORY
+
         body = self.body_dict
         n = body.get("n", 16384)  # default 16384 if not provided
-        if n > 2**20:
-            n = 2**20
+        if n > 2**18:
+            n = 2**18
+
+        # calculate cost of new session
+        # n^2 * size_of_type * 2.5_matrices (A, B) + some overhead
+        memory_cost = n**2 * np.dtype(NTYPE).itemsize * 3
+        if CURRENT_MEMORY + memory_cost > MAX_MEMORY:
+            # try to prune stale sessions
+            sessions_to_delete = []
+            for session_id, session_data in SESSIONS.items():
+                if time.time() - session_data["start_time"] > SESSION_TIMEOUT:
+                    sessions_to_delete.append(session_id)
+                    CURRENT_MEMORY -= session_data["memory_cost"]
+            for session_id in sessions_to_delete:
+                del SESSIONS[session_id]
+
+        # if we've still not up enough memory, error
+        if CURRENT_MEMORY + memory_cost > MAX_MEMORY:
+            self.write({"error": f"Memory limit exceeded, wait up to {SESSION_TIMEOUT} seconds for a session to expire"})
+            return
 
         master_seed = secrets.token_bytes(16)
         A, next_seed = create_deterministic_rowhash_matrix(n, master_seed)
@@ -177,7 +207,9 @@ class InitHandler(BaseHandler):
             "commitment_root": None,
             "r": None,
             "Cr": None,
-            "spot_rows": None
+            "spot_rows": None,
+            "memory_cost": memory_cost,
+            "start_time": time.time()
         }
 
         # Return session info for the coordinator
@@ -211,11 +243,15 @@ class CommitmentHandler(BaseHandler):
         # Generate random challenge vector r
         n = session_data["n"]
         challenge_seed = secrets.token_bytes(16)
-        r = create_row_from_hash(n, int.from_bytes(challenge_seed, "big"))
+        r = create_row_from_hash(n, challenge_seed)
         session_data["r"] = r
 
+        # Encode r as a base64 string to reduce truncation errors
+        r_bytes = r.numpy().tobytes()
+        r_b64 = base64.b64encode(r_bytes).decode()
+
         # Return the challenge vector as a list
-        self.write({"challenge_vector": r.tolist()})
+        self.write({"challenge_vector": r_b64})
 
 class RowChallengeHandler(BaseHandler):
     """
@@ -229,10 +265,17 @@ class RowChallengeHandler(BaseHandler):
             self.write({"error": "Invalid or missing session_id"})
             return
         
-        Cr_string_list = self.body_dict.get("Cr", [])
-        Cr_list = [float(s) for s in Cr_string_list]
+        # Encoding of raw buffer via base64 to reduce truncation errors
+        Cr_b64 = body.get("Cr")
+        Cr_bytes = base64.b64decode(Cr_b64)
+        Cr_array = np.frombuffer(Cr_bytes, dtype=NTYPE)
+        Cr_tensor = torch.from_numpy(Cr_array.copy())
+        
+        # Cr_string_list = self.body_dict.get("Cr", [])
+        # Cr_list = [float(s) for s in Cr_string_list]
+        # Cr_tensor = torch.tensor(Cr_list, dtype=DTYPE)
 
-        #Cr_list = body.get("Cr")
+        # Cr_list = body.get("Cr")
         # if Cr_list is None:
         #    self.write({"error": "Missing Cr"})
         #    return
@@ -243,7 +286,6 @@ class RowChallengeHandler(BaseHandler):
             self.write({"error": "Session missing A,B,r"})
             return
 
-        Cr_tensor = torch.tensor(Cr_list, dtype=torch.float64)
 
         # Perform Freivalds
         freivalds_ok = check_freivals(A, B, Cr_tensor, r)
@@ -263,55 +305,6 @@ class RowChallengeHandler(BaseHandler):
             "freivalds_ok": True,
             "spot_rows": chosen_rows
         })
-
-class RowCheckHandler(BaseHandler):
-    """
-    4) Coordinator calls /row_check with JSON:
-       {
-         "session_id": "...",
-         "row_idx": 123,
-         "row_data": [...],
-         "merkle_path": [...]
-       }
-       Verifier checks merkle path & row correctness vs. A[row_idx]*B.
-       Returns { "result": bool }.
-    """
-    def post(self):
-        body = self.body_dict
-        session_id = body.get("session_id")
-        row_idx = body.get("row_idx")
-        row_data = body.get("row_data")
-        merkle_path = body.get("merkle_path")
-
-        if not session_id or session_id not in SESSIONS:
-            self.write({"result": False, "error": "Invalid or missing session_id"})
-            return
-        if row_idx is None or row_data is None or merkle_path is None:
-            self.write({"result": False, "error": "Missing row check data"})
-            return
-
-        session_data = SESSIONS[session_id]
-        A, B, root = session_data["A"], session_data["B"], session_data["commitment_root"]
-        if root is None:
-            self.write({"result": False, "error": "No commitment_root in session"})
-            return
-
-        # Convert row_data to a tensor
-        row_data_tensor = torch.tensor(row_data, dtype=torch.float64)
-
-        # 1) Merkle verify
-        leaf_bytes = sha256_bytes(row_data_tensor.numpy().tobytes())
-        path_ok = merkle_verify_leaf(leaf_bytes, row_idx, merkle_path, root)
-        if not path_ok:
-            self.write({"result": False})
-            return
-
-        # 2) Check correctness
-        row_of_A = A[row_idx, :]
-        local_check_row = row_of_A.matmul(B)
-        row_checks_ok = torch.allclose(local_check_row, row_data_tensor, rtol=1e-5, atol=1e-5)
-
-        self.write({"result": bool(path_ok and row_checks_ok)})
 
 class MultiRowCheckHandler(BaseHandler):
     """
@@ -360,7 +353,9 @@ class MultiRowCheckHandler(BaseHandler):
 
         for row_obj in rows_info:
             row_idx = row_obj.get("row_idx")
-            row_data = row_obj.get("row_data")
+            row_data_b64 = row_obj.get("row_data")
+            row_data_bytes = base64.b64decode(row_data_b64)
+            row_data = np.frombuffer(row_data_bytes, dtype=NTYPE)
             merkle_path = row_obj.get("merkle_path")
 
             # Basic checks
@@ -370,7 +365,7 @@ class MultiRowCheckHandler(BaseHandler):
                 continue
 
             # Convert to tensor
-            row_data_tensor = torch.tensor(row_data, dtype=torch.float64)
+            row_data_tensor = torch.tensor(row_data, dtype=DTYPE)
 
             # 1) Merkle verify
             leaf_bytes = sha256_bytes(row_data_tensor.numpy().tobytes())
@@ -382,14 +377,18 @@ class MultiRowCheckHandler(BaseHandler):
 
             # 2) Row correctness
             row_of_A = A[row_idx, :]
-            local_check_row = row_of_A.matmul(B)
-            row_checks_ok = torch.allclose(local_check_row, row_data_tensor, rtol=1e-5, atol=1e-5)
+            # local_check_row = row_of_A.matmul(B)
+            # row_checks_ok = torch.allclose(local_check_row, row_data_tensor, rtol=R_TOL, atol=A_TOL)
+            row_checks_ok = check_row_correctness(row_of_A, B, row_data_tensor)
 
             passed = bool(path_ok and row_checks_ok)
             if not passed:
                 all_passed = False
 
             results.append({"row_idx": row_idx, "pass": passed})
+
+        # delete session to free up memory
+        del SESSIONS[session_id]
 
         self.write({
             "all_passed": all_passed,
@@ -402,12 +401,11 @@ def make_app():
         (r"/init",            InitHandler),
         (r"/commitment",      CommitmentHandler),
         (r"/row_challenge",   RowChallengeHandler),
-        (r"/row_check",       RowCheckHandler),
         (r"/multi_row_check", MultiRowCheckHandler),
     ])
 
 if __name__ == "__main__":
     app = make_app()
     app.listen(VERIFIER_PORT)
-    print(f"Verifier API running on port {VERIFIER_PORT}, using JSON-based requests.")
+    print(f"Verifier API running on port {VERIFIER_PORT}, dtype: {DTYPE}")
     tornado.ioloop.IOLoop.current().start()

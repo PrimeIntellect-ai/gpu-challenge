@@ -17,8 +17,9 @@ RUN pip3 install --no-cache-dir torch torchvision torchaudio --extra-index-url h
 
 # Install Tornado for the REST API
 RUN pip3 install --no-cache-dir tornado
-# Install eth_account for signature verification
 RUN pip3 install --no-cache-dir eth_account
+RUN pip3 install --no-cache-dir numba
+RUN pip3 install --no-cache-dir numpy
 
 # Create a working directory
 WORKDIR /app

@@ -91,8 +91,9 @@ def get_from_prover(endpoint: str) -> requests.Response:
 def run_protocol():
     # 1) Ask the verifier to init a new session: returns {session_id, n, master_seed}
     # init_resp = requests.post(f"{VERIFIER_URL}/init")
-    params = {"n": 20000}
+    params = {"n": 45000} # ~23GB of data
     init_resp = post_signed_json("/init", data=params)
+    print(init_resp.text)
     init_data = init_resp.json()
     session_id = init_data["session_id"]
     n = init_data["n"]
