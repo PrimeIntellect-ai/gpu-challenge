@@ -28,6 +28,19 @@ leaves = None
 merkle_tree = None
 commitment_root = None
 
+# function that prints 0 the first time, then on subsequent calls, prints the time elapsed since the first call
+def print_elapsed_time(msg=None, restart=False):
+    if not DEBUG:
+        return
+    import time
+    if restart:
+        print_elapsed_time.start_time = time.time()
+    if not hasattr(print_elapsed_time, 'start_time'):
+        print_elapsed_time.start_time = time.time()
+        print(msg, 0)
+    else:
+        print(msg, time.time() - print_elapsed_time.start_time)
+
 def merkle_build_tree(leaves: list[bytes]) -> list[bytes]:
     level = leaves[:]
     tree = []
@@ -111,23 +124,10 @@ def compute_C(A, B):
     
     # For very large matrices, use blocking
     if n > 4096:
-        return block_matmul(A, B)
-    # For medium matrices, use vanilla matrix multiplication with synchronization
-    C_t = torch.mm(A, B)
-    return C_t
-
-# function that prints 0 the first time, then on subsequent calls, prints the time elapsed since the first call
-def print_elapsed_time(msg=None, restart=False):
-    if not DEBUG:
-        return
-    import time
-    if restart:
-        print_elapsed_time.start_time = time.time()
-    if not hasattr(print_elapsed_time, 'start_time'):
-        print_elapsed_time.start_time = time.time()
-        print(msg, 0)
+        return block_matmul(A, B, 4096)
     else:
-        print(msg, time.time() - print_elapsed_time.start_time)
+        # For medium matrices, use vanilla matrix multiplication with synchronization
+        return torch.mm(A, B)
 
 class SetABHandler(tornado.web.RequestHandler):
     def post(self):
@@ -141,11 +141,8 @@ class SetABHandler(tornado.web.RequestHandler):
         A, next_seed = create_deterministic_rowhash_matrix(n, master_seed)
         B, _ = create_deterministic_rowhash_matrix(n, next_seed)
 
-        print_elapsed_time("SetABHandler: after creating A,B")
-
         cuda_sync()
-        C_t = compute_C(A, B)
-        C = C_t
+        C = compute_C(A, B)
 
         print_elapsed_time("SetABHandler: after computing C")
 

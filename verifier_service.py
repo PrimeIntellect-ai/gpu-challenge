@@ -247,7 +247,7 @@ class CommitmentHandler(BaseHandler):
         session_data["r"] = r
 
         # Encode r as a base64 string to reduce truncation errors
-        r_bytes = r.numpy().tobytes()
+        r_bytes = r.cpu().numpy().tobytes()
         r_b64 = base64.b64encode(r_bytes).decode()
 
         # Return the challenge vector as a list
@@ -294,7 +294,7 @@ class RowChallengeHandler(BaseHandler):
             return
 
         # If ok, pick some rows to spot check
-        k = 2
+        k = 10
         n = session_data["n"]
         chosen_rows = []
         while len(set(chosen_rows)) < k:
@@ -368,7 +368,7 @@ class MultiRowCheckHandler(BaseHandler):
             row_data_tensor = torch.tensor(row_data, dtype=DTYPE)
 
             # 1) Merkle verify
-            leaf_bytes = sha256_bytes(row_data_tensor.numpy().tobytes())
+            leaf_bytes = sha256_bytes(row_data_tensor.cpu().numpy().tobytes())
             path_ok = merkle_verify_leaf(leaf_bytes, row_idx, merkle_path, root)
             if not path_ok:
                 results.append({"row_idx": row_idx, "pass": False})

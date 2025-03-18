@@ -92,6 +92,8 @@ def run_protocol():
     # 1) Ask the verifier to init a new session: returns {session_id, n, master_seed}
     # init_resp = requests.post(f"{VERIFIER_URL}/init")
     params = {"n": 45000} # ~23GB of data
+    params = {"n": 80000} # ~46GB of data
+    params = {"n": 8192} # ~46GB of data
     init_resp = post_signed_json("/init", data=params)
     print(init_resp.text)
     init_data = init_resp.json()
