@@ -23,7 +23,8 @@ from common import (
     DTYPE,
     NTYPE,
     A_TOL,
-    R_TOL
+    R_TOL,
+    DEVICE
 )
 AUTHORIZED_ADDRESS = os.getenv("AUTHORIZED_ADDRESS", "").lower()
 # e.g. "0xAbCd1234..." the address derived from your private key
@@ -65,16 +66,16 @@ def check_freivals(A, B, Cr, r):
     check = A.matmul(x)
     
     # Kahan summation pattern for reduced error when checking difference
-    residual = check - Cr
-    residual_norm = torch.norm(residual)
-    sum_norm = torch.norm(check) + 1e-10  # Avoid division by zero
+    # residual = check - Cr
+    # residual_norm = torch.norm(residual)
+    # sum_norm = torch.norm(check) + 1e-10  # Avoid division by zero
     
     # Check both relative and absolute error
-    relative_error = residual_norm / sum_norm
-    absolute_error = residual_norm
+    # relative_error = residual_norm / sum_norm
+    # absolute_error = residual_norm
     
     # For debugging: print the actual errors
-    print(f"Relative error: {relative_error.item()}, Absolute error: {absolute_error.item()}")
+    # print(f"Relative error: {relative_error.item()}, Absolute error: {absolute_error.item()}")
 
     return safe_allclose(check, Cr, rtol=R_TOL, atol=A_TOL)
 
@@ -288,7 +289,7 @@ class RowChallengeHandler(BaseHandler):
 
 
         # Perform Freivalds
-        freivalds_ok = check_freivals(A, B, Cr_tensor, r)
+        freivalds_ok = check_freivals(A, B, Cr_tensor.to(DEVICE), r.to(DEVICE))
         if not freivalds_ok:
             self.write({"freivalds_ok": False, "spot_rows": []})
             return
@@ -379,7 +380,7 @@ class MultiRowCheckHandler(BaseHandler):
             row_of_A = A[row_idx, :]
             # local_check_row = row_of_A.matmul(B)
             # row_checks_ok = torch.allclose(local_check_row, row_data_tensor, rtol=R_TOL, atol=A_TOL)
-            row_checks_ok = check_row_correctness(row_of_A, B, row_data_tensor)
+            row_checks_ok = check_row_correctness(row_of_A.to(DEVICE), B, row_data_tensor.to(DEVICE))
 
             passed = bool(path_ok and row_checks_ok)
             if not passed:
