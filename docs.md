@@ -41,7 +41,7 @@ Requests must be signed with a private key that corresponds to the `ALLOWED_ADDR
 
 #### 1. `POST /init`
 
-Creates a new session, generates a pair of deterministic matrices \(A\) and \(B\), and returns:
+Creates a new session, generates a pair of deterministic matrices $\(A\)$ and $\(B\)$, and returns:
 - A UUID-based `session_id`
 - The square matrix dimension `n`
 - A 16-byte `master_seed` (hex-encoded) for deterministic row generation.
@@ -66,7 +66,7 @@ Creates a new session, generates a pair of deterministic matrices \(A\) and \(B\
 
 #### 2. `POST /commitment`
 
-After instructing the prover to set \(A\) and \(B\), submit the Merkle root of the claimed product matrix \(C\). The API returns a random challenge vector \(r\) for Freivalds’ check.
+After instructing the prover to set $\(A\)$ and $\(B\)$, submit the Merkle root of the claimed product matrix $\(C\)$. The API returns a random challenge vector $\(r\)$ for Freivalds’ check.
 
 ##### Request Body
 ```json
@@ -88,7 +88,7 @@ The `challenge_vector` is a Base64-encoded float array, serialized in the same f
 
 #### 3. `POST /row_challenge`
 
-Sends the vector \(C \cdot r\) so the API can perform Freivalds’ check. If the check passes, a set of row indices is returned for spot-checking.
+Sends the vector $\(C \cdot r\)$ so the API can perform Freivalds’ check. If the check passes, a set of row indices is returned for spot-checking.
 
 ##### Request Body
 ```json
@@ -97,7 +97,7 @@ Sends the vector \(C \cdot r\) so the API can perform Freivalds’ check. If the
   "Cr": "base64-of-float-array"
 }
 ```
-`Cr` is the Base64-encoded result of \(C \cdot r\).
+`Cr` is the Base64-encoded result of $\(C \cdot r\)$.
 
 ##### Response Body
 ```json
@@ -128,7 +128,7 @@ Performs a final spot-check on multiple rows. Each row’s content is Merkle-ver
   ]
 }
 ```
-- `row_data` is the Base64-encoded row of \(C\) at `row_idx`.
+- `row_data` is the Base64-encoded row of $\(C\)$ at `row_idx`.
 
 ##### Response Body
 ```json
@@ -148,7 +148,7 @@ If `all_passed` is false, at least one row failed verification. The session is f
 
 ## Prover
 
-This Tornado-based HTTP API manages a prover’s side of matrix multiplication verification. It deterministically constructs matrices \(A\) and \(B\) from a seed, computes \(C = A \times B\), and constructs a Merkle tree over the rows of \(C\). Floating-point vectors and rows are serialized in Base64 form to avoid numeric truncation.
+This Tornado-based HTTP API manages a prover’s side of matrix multiplication verification. It deterministically constructs matrices $\(A\)$ and $\(B\)$ from a seed, computes $\(C = A \times B\)$, and constructs a Merkle tree over the rows of $\(C\)$. Floating-point vectors and rows are serialized in Base64 form to avoid numeric truncation.
 
 ### Endpoints
 
@@ -156,7 +156,7 @@ This Tornado-based HTTP API manages a prover’s side of matrix multiplication v
 
 #### 1. `POST /setAB`
 
-Generates matrices \(A\) and \(B\) of size \(\text{n} \times \text{n}\) from a seed, computes \(C = A \times B\), and constructs a Merkle tree over \(C\).
+Generates matrices $\(A\)$ and $\(B\)$ of size $\(\text{n} \times \text{n}\)$ from a seed, computes $\(C = A \times B\)$, and constructs a Merkle tree over $\(C\)$.
 
 ##### Request Body
 ```json
@@ -172,13 +172,13 @@ Generates matrices \(A\) and \(B\) of size \(\text{n} \times \text{n}\) from a s
   "status": "ok"
 }
 ```
-On success, the product \(C\) is held in memory, and the Merkle tree and its root are computed.
+On success, the product $\(C\)$ is held in memory, and the Merkle tree and its root are computed.
 
 ---
 
 #### 2. `GET /getCommitment`
 
-Returns the Merkle root of \(C\). This root can be used for verifying the integrity of row proofs later.
+Returns the Merkle root of $\(C\)$. This root can be used for verifying the integrity of row proofs later.
 
 ##### Response Body
 ```json
@@ -191,7 +191,7 @@ Returns the Merkle root of \(C\). This root can be used for verifying the integr
 
 #### 3. `POST /computeCR`
 
-Computes \(C \cdot r\). The challenge vector `r` is provided in Base64 form (raw bytes of the underlying float array).
+Computes $\(C \cdot r\)$. The challenge vector `r` is provided in Base64 form (raw bytes of the underlying float array).
 
 ##### Request Body
 ```json
@@ -206,13 +206,13 @@ Computes \(C \cdot r\). The challenge vector `r` is provided in Base64 form (raw
   "Cr": "base64-of-float-array"
 }
 ```
-The result is a Base64-encoded float array of length \(n\).
+The result is a Base64-encoded float array of length $\(n\)$.
 
 ---
 
 #### 4. `POST /getRowProofs`
 
-Given a list of row indices, returns the corresponding rows of \(C\), along with their Merkle proof paths.
+Given a list of row indices, returns the corresponding rows of $\(C\)$, along with their Merkle proof paths.
 
 ##### Request Body
 ```json
