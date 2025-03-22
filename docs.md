@@ -33,7 +33,7 @@
 
 This Tornado-based HTTP API verifies matrix multiplication proofs using Freivalds' algorithm and spot-checking rows. Float vectors and matrices are transmitted in Base64 form (raw bytes of the underlying float array).
 
-Requests must be signed with a private key that corresponds to the `ALLOWED_ADDRESS` variable.
+Requests must be signed with a private key that corresponds to the `ALLOWED_ADDRESS` environment variable.
 
 ### Endpoints
 
