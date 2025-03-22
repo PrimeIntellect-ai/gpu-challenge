@@ -26,9 +26,12 @@ WORKDIR /app
 
 # Copy everything (including .py files) into /app
 COPY ./prover.py /app
+COPY ./common.py /app
+COPY ./verifier.py /app
 
-# Expose port 12121 for the Flask server
+# Expose port 12121 for the servers
 EXPOSE 12121
+EXPOSE 14141
 
-# Run the Prover application
+# Run the Prover application by default
 CMD ["python3", "prover.py"]
