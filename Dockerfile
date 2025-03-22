@@ -20,6 +20,7 @@ RUN pip3 install --no-cache-dir tornado
 RUN pip3 install --no-cache-dir joblib
 RUN pip3 install --no-cache-dir numba
 RUN pip3 install --no-cache-dir numpy
+RUN pip3 install --no-cache-dir eth_account
 
 # Create a working directory
 WORKDIR /app
