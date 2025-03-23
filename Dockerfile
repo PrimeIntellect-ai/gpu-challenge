@@ -28,9 +28,9 @@ WORKDIR /app
 # Copy everything (including .py files) into /app
 COPY ./prover.py /app
 COPY ./common.py /app
-COPY ./verifier.py /app
+COPY ./verifier_service.py /app
 
-# Expose port 12121 for the servers
+# Expose port 12121, 14141 for the servers
 EXPOSE 12121
 EXPOSE 14141
 
