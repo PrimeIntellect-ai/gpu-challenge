@@ -30,6 +30,7 @@ AUTHORIZED_ADDRESS = os.getenv("AUTHORIZED_ADDRESS", "").lower()
 # e.g. "0xAbCd1234..." the address derived from your private key
 
 VERIFIER_PORT = int(os.getenv("VERIFIER_PORT", 14141))
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
 GB = 1024**3
 
@@ -133,25 +134,27 @@ class BaseHandler(tornado.web.RequestHandler):
 
         message_str = f"{endpoint}{request_data_string}"
         message = encode_defunct(text=message_str)
-
-        # Recover address from signature
-        try:
-            recovered_address = Account.recover_message(
-                message, 
-                signature=bytes.fromhex(signature_hex)
-            )
-        except:
-            self.set_status(401)
-            self.write({"error": "Signature recovery failed"})
-            self.finish()
-            return
-
-        # Check against our authorized address
-        if recovered_address.lower() != AUTHORIZED_ADDRESS:
-            self.set_status(401)
-            self.write({"error": "Unauthorized signer"})
-            self.finish()
-            return
+        
+        # disable signature verification in DEBUG mode
+        if not DEBUG:
+            # Recover address from signature
+            try:
+                recovered_address = Account.recover_message(
+                    message, 
+                    signature=bytes.fromhex(signature_hex)
+                )
+            except:
+                self.set_status(401)
+                self.write({"error": "Signature recovery failed"})
+                self.finish()
+                return
+            
+            # Check against our authorized address
+            if recovered_address.lower() != AUTHORIZED_ADDRESS:
+                self.set_status(401)
+                self.write({"error": "Unauthorized signer"})
+                self.finish()
+                return
 
         # If all good, proceed. Child handlers can access self.body_dict.
     
