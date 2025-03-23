@@ -46,3 +46,37 @@ This protocol verifies a large matrix multiplication $C = A \times B$ performed 
    - **Row Spot‐Check:** For each opened row $i$, verifies the Merkle path matches the root, then checks the row’s correctness by computing $A[i,:] \times B$.  
 
 If all checks pass, the verifier concludes $C$ is correct with high probability, without doing a full $O(n^3)$ recomputation.
+
+## Usage
+
+1. Generate a key pair:
+```python
+from eth_account import Account
+
+# Generate a new random account
+account = Account.create()
+private_key_hex = account.key.hex()
+
+# Print it to set as environment variable
+print(f"Generated private key: {private_key_hex}")
+print(f"Generated address: {account.address}")
+```
+
+2. Create 3 terminals sessions for the prover, verifier and coordinator.
+
+3. Set the private key as an environment variable in the coordinator terminal:
+```bash
+export PRIVATE_KEY="0x..."
+```
+
+4. Set the authorized address in the verifier service:
+```bash
+export AUTHORIZED_ADDRESS="0x..."
+```
+
+5. Run the 3 scripts:
+```bash
+python prover.py
+python verifier_service.py
+python coordinator.py
+```
