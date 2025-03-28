@@ -117,17 +117,57 @@ def block_matmul(A, B, block_size=1024):
     
     return result
 
+def multi_gpu_block_matmul_from_gpu0(A_0, B_0, block_size=4096):
+    """
+    A_0 and B_0 both reside on 'cuda:0'.
+    Splits A_0 by rows across all GPUs, replicates B_0, does block matmul locally,
+    then gathers partial results on 'cuda:0' and concatenates.
+    """
+    n = A_0.shape[0]
+    num_gpus = torch.cuda.device_count()
+    if num_gpus < 2:
+        # Fallback to single‐GPU block matmul on device 0
+        return block_matmul(A_0, B_0, block_size)
+
+    devices = [f'cuda:{i}' for i in range(num_gpus)]
+    chunk_size = (n + num_gpus - 1) // num_gpus
+    partial_results = []
+
+    for i, dev in enumerate(devices):
+        start = i * chunk_size
+        end = min(start + chunk_size, n)
+        if start >= end:
+            break
+
+        # "Shave down" A_0 by rows for this chunk
+        A_chunk = A_0[start:end]
+        A_chunk_dev = A_chunk.to(dev, non_blocking=True)
+        B_dev = B_0.to(dev, non_blocking=True)
+
+        # Local block matmul on GPU i
+        partial_dev = block_matmul(A_chunk_dev, B_dev, block_size)
+
+        # Copy partial result back to GPU 0
+        partial_gpu0 = partial_dev.to('cuda:0', non_blocking=True)
+        partial_results.append(partial_gpu0)
+
+    # Concatenate the partial results (on GPU 0)
+    return torch.cat(partial_results, dim=0)
+
 @timer
-def compute_C(A, B):
-    """Block matrix multiplication for improved FP32 stability"""
-    n = A.shape[0]
-    
-    # For very large matrices, use blocking
-    if n > 4096:
-        return block_matmul(A, B, 4096)
+def compute_C(A_0, B_0):
+    """
+    Automatically uses multi_gpu_block_matmul_from_gpu0 if multiple GPUs exist.
+    A_0 and B_0 are assumed to be on 'cuda:0' already.
+    """
+    n = A_0.shape[0]
+    if torch.cuda.device_count() > 1:
+        return multi_gpu_block_matmul_from_gpu0(A_0, B_0, block_size=4096)
     else:
-        # For medium matrices, use vanilla matrix multiplication with synchronization
-        return torch.mm(A, B)
+        if n > 4096:
+            return block_matmul(A_0, B_0, 4096)
+        else:
+            return torch.mm(A_0, B_0)
 
 class SetABHandler(tornado.web.RequestHandler):
     def post(self):
