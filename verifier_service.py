@@ -399,6 +399,25 @@ class MultiRowCheckHandler(BaseHandler):
             "results": results
         })
 
+class ClearHandler(BaseHandler):
+    """
+    Clear a session by session_id"
+    """
+    def post(self):
+        body = self.body_dict
+        session_id = body.get("session_id")
+        if not session_id or session_id not in SESSIONS:
+            self.write({"error": "Invalid or missing session_id"})
+            return
+
+        session_data = SESSIONS[session_id]
+        memory_cost = session_data["memory_cost"]
+        del SESSIONS[session_id]
+        global CURRENT_MEMORY
+        CURRENT_MEMORY -= memory_cost
+
+        self.write({"status": "ok"})
+
 
 def make_app():
     return tornado.web.Application([
@@ -406,6 +425,7 @@ def make_app():
         (r"/commitment",      CommitmentHandler),
         (r"/row_challenge",   RowChallengeHandler),
         (r"/multi_row_check", MultiRowCheckHandler),
+        (r"/clear",           ClearHandler),
     ])
 
 if __name__ == "__main__":
