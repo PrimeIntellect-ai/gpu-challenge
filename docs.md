@@ -15,19 +15,22 @@
          - [4. `POST /multi_row_check`](#4-post-multi_row_check)
             * [Request Body](#request-body-3)
             * [Response Body](#response-body-3)
+         - [5. `POST /clear`](#5-clear)
+            * [Request Body](#request-body-4)
+            * [Response Body](#response-body-4)
    * [Prover](#prover)
       + [Endpoints](#endpoints-1)
          - [1. `POST /setAB`](#1-post-setab)
-            * [Request Body](#request-body-4)
-            * [Response Body](#response-body-4)
-         - [2. `GET /getCommitment`](#2-get-getcommitment)
-            * [Response Body](#response-body-5)
-         - [3. `POST /computeCR`](#3-post-computecr)
             * [Request Body](#request-body-5)
+            * [Response Body](#response-body-5)
+         - [2. `GET /getCommitment`](#2-get-getcommitment)
             * [Response Body](#response-body-6)
-         - [4. `POST /getRowProofs`](#4-post-getrowproofs)
+         - [3. `POST /computeCR`](#3-post-computecr)
             * [Request Body](#request-body-6)
             * [Response Body](#response-body-7)
+         - [4. `POST /getRowProofs`](#4-post-getrowproofs)
+            * [Request Body](#request-body-7)
+            * [Response Body](#response-body-8)
 
 ## Verifier
 
@@ -145,6 +148,29 @@ Performs a final spot-check on multiple rows. Each row’s content is Merkle-ver
 ```
 If `all_passed` is false, at least one row failed verification. The session is freed after this call.
 
+---
+
+#### 5. `POST /clear`
+
+Manually deletes a session prior to its completion or timeout, if the completion is no longer needed.
+
+##### Request Body
+```json
+{
+  "session_id": "some-uuid",
+}
+```
+
+##### Response Body
+```json
+{
+  "status": "ok"
+}
+```
+
+If the session does not exist, this call will return a `500` error.
+
+---
 
 ## Prover
 
