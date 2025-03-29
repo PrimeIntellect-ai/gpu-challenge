@@ -15,7 +15,7 @@
          - [4. `POST /multi_row_check`](#4-post-multi_row_check)
             * [Request Body](#request-body-3)
             * [Response Body](#response-body-3)
-         - [5. `POST /clear`](#5-clear)
+         - [5. `POST /clear`](#5-post-clear)
             * [Request Body](#request-body-4)
             * [Response Body](#response-body-4)
    * [Prover](#prover)
